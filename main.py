@@ -1,68 +1,78 @@
 #!/usr/bin/env python3
-"""Ship the bundled newspaper picture to the grader's output folder.
+"""Entry point for the make.fun news-image-20261118 submission.
 
-Next to this script lives a finished PNG of a one-page newspaper
-covering world news from 18 November 2026. All this script does is
-hand that exact file over: it locates the PNG beside itself, drops a
-byte-identical duplicate at ``$MAKEFUN_OUTPUT_DIR/entry.png`` (falling
-back to ``/output`` when the variable is absent), and then proves the
-duplicate matches by comparing SHA-256 digests. Nothing here touches
-the network, nothing is generated on the fly, and running it twice
-always yields the same bytes.
+Copies the pre-rendered front page (entry.png, in this repo) into the
+output directory requested by the harness and proves the copy is exact.
+
+Behaviour:
+  * source: entry.png next to this file
+  * target: $MAKEFUN_OUTPUT_DIR/entry.png, or /output/entry.png when
+    the variable is unset
+  * checks: PNG magic bytes on the source and on the copy, plus a
+    SHA-256 comparison between source and copy
+  * exits non-zero with a clear message if anything fails
 """
-
 import hashlib
 import os
+import shutil
 import sys
 from pathlib import Path
 
-
-def resolve_paths():
-    """Work out where the bundled picture is and where its copy goes."""
-    here = Path(__file__).resolve().parent
-    bundled = here / "entry.png"
-    folder = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output")
-    return bundled, folder / "entry.png"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def digest(path):
-    """Return the SHA-256 hex digest of the file at ``path``."""
-    hasher = hashlib.sha256()
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def copy_checked(bundled, destination):
-    """Duplicate ``bundled`` at ``destination`` and prove it matches."""
-    if not bundled.is_file():
-        print(f"fatal: no entry.png found beside {__file__}", file=sys.stderr)
-        raise SystemExit(1)
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print(f"fatal: cannot create output folder: {exc}", file=sys.stderr)
-        raise SystemExit(1)
-    expected = digest(bundled)
-    data = bundled.read_bytes()
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        print("fatal: bundled entry.png does not start with a PNG header",
-              file=sys.stderr)
-        raise SystemExit(1)
-    destination.write_bytes(data)
-    actual = digest(destination)
-    if actual != expected:
-        print("fatal: copy failed integrity check (sha256 mismatch)",
-              file=sys.stderr)
-        raise SystemExit(1)
-    print(f"wrote {destination} ({len(data)} bytes, sha256 {actual})")
+def fail(message: str) -> "SystemExit":
+    print(f"main.py: ERROR: {message}", file=sys.stderr)
+    return SystemExit(1)
 
 
-def main():
-    bundled, destination = resolve_paths()
-    copy_checked(bundled, destination)
+def main() -> int:
+    here = Path(__file__).resolve().parent
+    source = here / "entry.png"
+
+    if not source.is_file():
+        raise SystemExit(fail(f"source image missing: {source}"))
+
+    with source.open("rb") as handle:
+        head = handle.read(len(PNG_MAGIC))
+    if head != PNG_MAGIC:
+        raise SystemExit(fail("source is not a PNG file (bad magic bytes)"))
+    source_hash = sha256_of(source)
+    source_size = source.stat().st_size
+    if source_size > 1024 * 1024:
+        raise SystemExit(
+            fail(f"source is {source_size} bytes, over the 1 MiB limit"))
+
+    out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "entry.png"
+
+    shutil.copyfile(source, target)
+
+    with target.open("rb") as handle:
+        head = handle.read(len(PNG_MAGIC))
+    if head != PNG_MAGIC:
+        raise SystemExit(fail("copied file is not a PNG (bad magic bytes)"))
+    target_hash = sha256_of(target)
+    if target_hash != source_hash:
+        raise SystemExit(
+            fail(f"SHA-256 mismatch after copy: {target_hash} != "
+                 f"{source_hash}"))
+
+    print(f"main.py: wrote {target}")
+    print(f"main.py: bytes {source_size}")
+    print(f"main.py: sha256 {target_hash}")
+    print("main.py: OK — copy verified byte-identical")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
