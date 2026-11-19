@@ -15,10 +15,32 @@ Behaviour:
 import hashlib
 import os
 import shutil
+import struct
 import sys
 from pathlib import Path
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+EXPECTED_WIDTH = 1024
+EXPECTED_HEIGHT = 1024
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    """Read width/height from the IHDR chunk of a PNG file.
+
+    Pure stdlib: PNG files start with the 8-byte magic, then an IHDR
+    chunk whose 13-byte payload begins with width and height as
+    big-endian unsigned 32-bit integers.
+    """
+    with path.open("rb") as handle:
+        header = handle.read(8 + 4 + 4 + 13)
+    if len(header) < 29 or header[:8] != PNG_MAGIC:
+        raise ValueError("not a PNG file (bad magic bytes)")
+    chunk_length = struct.unpack(">I", header[8:12])[0]
+    chunk_type = header[12:16]
+    if chunk_length != 13 or chunk_type != b"IHDR":
+        raise ValueError("first PNG chunk is not IHDR")
+    width, height = struct.unpack(">II", header[16:24])
+    return width, height
 
 
 def sha256_of(path: Path) -> str:
@@ -45,6 +67,14 @@ def main() -> int:
         head = handle.read(len(PNG_MAGIC))
     if head != PNG_MAGIC:
         raise SystemExit(fail("source is not a PNG file (bad magic bytes)"))
+    try:
+        width, height = png_dimensions(source)
+    except ValueError as exc:
+        raise SystemExit(fail(f"source PNG is malformed: {exc}"))
+    if (width, height) != (EXPECTED_WIDTH, EXPECTED_HEIGHT):
+        raise SystemExit(
+            fail(f"source is {width}x{height}, expected "
+                 f"{EXPECTED_WIDTH}x{EXPECTED_HEIGHT}"))
     source_hash = sha256_of(source)
     source_size = source.stat().st_size
     if source_size > 1024 * 1024:
